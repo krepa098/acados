@@ -750,35 +750,16 @@ def remove_x0_elimination(acados_ocp):
     acados_ocp.dims.nbxe_0 = 0
 
 
-class AcadosOcpSolver:
+class AcadosOcpTemplate:
     """
-    Class to interact with the acados ocp solver C object.
+    Class to interact with the acados ocp code generation
 
         :param acados_ocp: type AcadosOcp - description of the OCP for acados
         :param json_file: name for the json file used to render the templated code - default: acados_ocp_nlp.json
         :param simulink_opts: Options to configure Simulink S-function blocks, mainly to activate possible Inputs and Outputs
-        :param build: Option to disable rendering templates and compiling if previously built - default: True
     """
-    if sys.platform=="win32":
-        from ctypes import wintypes
-        dlclose = WinDLL('kernel32', use_last_error=True).FreeLibrary  
-        dlclose.argtypes = [wintypes.HMODULE]
-    else:
-        dlclose = CDLL(None).dlclose
-        dlclose.argtypes = [c_void_p]
 
-    def __init__(self, acados_ocp, json_file='acados_ocp_nlp.json', simulink_opts=None, build=True):
-
-        self.solver_created = False
-        self.N = acados_ocp.dims.N
-        model = acados_ocp.model
-
-        if simulink_opts == None:
-            acados_path = get_acados_path()
-            json_path = os.path.join(acados_path, 'interfaces/acados_template/acados_template')
-            with open(json_path + '/simulink_default_opts.json', 'r') as f:
-                simulink_opts = json.load(f)
-
+    def __init__(self, acados_ocp, json_file='acados_ocp_nlp.json', simulink_opts=None):
         # make dims consistent
         make_ocp_dims_consistent(acados_ocp)
 
@@ -793,22 +774,50 @@ class AcadosOcpSolver:
         acados_ocp.solver_options.Tsim = acados_ocp.solver_options.time_steps[0]
 
         # generate external functions
-        ocp_generate_external_functions(acados_ocp, model)
+        ocp_generate_external_functions(acados_ocp, acados_ocp.model)
+
+        if simulink_opts == None:
+            acados_path = get_acados_path()
+            json_path = os.path.join(acados_path, 'interfaces/acados_template/acados_template')
+            with open(json_path + '/simulink_default_opts.json', 'r') as f:
+                simulink_opts = json.load(f)
 
         # dump to json
         ocp_formulation_json_dump(acados_ocp, simulink_opts, json_file)
 
-        if build:
-          # render templates
-          ocp_render_templates(acados_ocp, json_file)
+        # render templates
+        ocp_render_templates(acados_ocp, json_file)
 
-          ## Compile solver
-          code_export_dir = acados_ocp.code_export_directory
-          cwd=os.getcwd()
-          os.chdir(code_export_dir)
-          os.system('make clean_ocp_shared_lib')
-          os.system('make ocp_shared_lib')
-          os.chdir(cwd)
+        self.acados_ocp = acados_ocp
+        self.json_file = json_file
+
+
+class AcadosOcpSolver:
+    """
+    Class to interact with the acados ocp solver C object.
+
+        :param template: type AcadosOcpTemplate - template generation of the OCP for acados
+    """
+    if sys.platform=="win32":
+        from ctypes import wintypes
+        dlclose = WinDLL('kernel32', use_last_error=True).FreeLibrary  
+        dlclose.argtypes = [wintypes.HMODULE]
+    else:
+        dlclose = CDLL(None).dlclose
+        dlclose.argtypes = [c_void_p]
+
+    def __init__(self, template):
+        self.solver_created = False
+        self.N = template.acados_ocp.dims.N
+        model = template.acados_ocp.model
+
+        ## Compile solver
+        code_export_dir = template.acados_ocp.code_export_directory
+        cwd=os.getcwd()
+        os.chdir(code_export_dir)
+        os.system('make clean_ocp_shared_lib')
+        os.system('make ocp_shared_lib')
+        os.chdir(cwd)
 
         self.shared_lib_name = f'{code_export_dir}/libacados_ocp_solver_{model.name}.so'
 
@@ -850,7 +859,7 @@ class AcadosOcpSolver:
         getattr(self.shared_lib, f"{model.name}_acados_get_nlp_solver").restype = c_void_p
         self.nlp_solver = getattr(self.shared_lib, f"{model.name}_acados_get_nlp_solver")(self.capsule)
 
-        self.acados_ocp = acados_ocp
+        self.acados_ocp = template.acados_ocp
 
 
     def solve(self):
